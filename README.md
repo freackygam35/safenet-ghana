@@ -2,7 +2,7 @@
 
 > Affordable, all-in-one network security system for small businesses in Ghana.
 
-Built by **Patrick Idan** | GCTU Cybersecurity Evening Programme | Final Year Project
+Built by **Patrick Idan** | Ghana Communication Technology University (GCTU) Student | Final Year Project
 
 ---
 
