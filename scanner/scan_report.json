@@ -1,0 +1,63 @@
+{
+  "scan_metadata": {
+    "target": "10.107.35.174",
+    "timestamp": "2026-05-07T03:13:43.020113",
+    "tool": "SafeNet Ghana - Vulnerability Scanner v0.1",
+    "author": "Patrick Idan - GCTU Cybersecurity"
+  },
+  "hosts": [
+    {
+      "ip": "10.107.35.174",
+      "hostname": "Unknown",
+      "state": "up",
+      "open_ports": [
+        {
+          "port": 445,
+          "protocol": "tcp",
+          "state": "open",
+          "service": "SMB",
+          "product": "",
+          "severity": "CRITICAL",
+          "description": "Windows file sharing. EternalBlue/WannaCry vector."
+        },
+        {
+          "port": 135,
+          "protocol": "tcp",
+          "state": "open",
+          "service": "MS-RPC",
+          "product": "Microsoft Windows RPC",
+          "severity": "HIGH",
+          "description": "Windows RPC. Frequently targeted by malware."
+        },
+        {
+          "port": 139,
+          "protocol": "tcp",
+          "state": "open",
+          "service": "NetBIOS",
+          "product": "Microsoft Windows netbios-ssn",
+          "severity": "HIGH",
+          "description": "Old Windows sharing. Common attack vector."
+        },
+        {
+          "port": 8000,
+          "protocol": "tcp",
+          "state": "open",
+          "service": "http",
+          "product": "Uvicorn",
+          "severity": "INFO",
+          "description": "Unknown service. Review manually."
+        }
+      ],
+      "host_risk": "CRITICAL"
+    }
+  ],
+  "summary": {
+    "total_hosts": 1,
+    "open_ports": 4,
+    "critical_count": 1,
+    "high_count": 2,
+    "medium_count": 0,
+    "low_count": 0,
+    "overall_risk": "CRITICAL"
+  }
+}
