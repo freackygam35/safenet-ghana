@@ -1,21 +1,24 @@
 """
-SafeNet Ghana - API Server
-Wraps the vulnerability scanner in a web API.
-Your React dashboard and Flutter app will talk to this.
+SafeNet Ghana - API Server (with JWT Authentication)
+All scan endpoints are now protected. You must log in to use them.
 
 Author: Patrick Idan
-Project: SafeNet Ghana Final Year Project - GCTU Cybersecurity
+Project: SafeNet Ghana - GCTU Cybersecurity
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 import datetime
 import json
-import os
 
-# Import our scanner functions directly
 from scanner import resolve_target, run_scan, analyze_results
+from auth import (
+    authenticate_user, create_access_token,
+    get_current_user, require_admin,
+    Token, User, TOKEN_EXPIRE
+)
 
 # ─────────────────────────────────────────────
 #  APP SETUP
@@ -23,11 +26,9 @@ from scanner import resolve_target, run_scan, analyze_results
 app = FastAPI(
     title="SafeNet Ghana API",
     description="Affordable integrated security system for Ghanaian small businesses.",
-    version="0.1.0",
+    version="0.2.0",
 )
 
-# CORS — allows your React app and Flutter app to call this API
-# In production you'll restrict this to your actual domain
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -35,35 +36,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory scan history (later this moves to PostgreSQL)
 scan_history = []
 
 
 # ─────────────────────────────────────────────
-#  REQUEST / RESPONSE MODELS
-#  Pydantic validates incoming JSON automatically
+#  REQUEST MODELS
 # ─────────────────────────────────────────────
 class ScanRequest(BaseModel):
-    target: str
-    scan_type: str = "basic"   # basic | version | full
-
-
-class ScanResponse(BaseModel):
-    success: bool
-    message: str
-    data: dict = {}
+    target:    str
+    scan_type: str = "basic"
 
 
 # ─────────────────────────────────────────────
-#  ROUTES
+#  PUBLIC ROUTES (no token needed)
 # ─────────────────────────────────────────────
-
 @app.get("/")
 def root():
-    """Health check — confirms API is running."""
     return {
         "system":  "SafeNet Ghana",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "status":  "online",
         "author":  "Patrick Idan - GCTU Cybersecurity",
         "modules": ["vulnerability-scanner", "wifi-ids (coming)", "cctv-monitor (coming)"],
@@ -72,99 +63,123 @@ def root():
 
 @app.get("/health")
 def health():
-    """Simple health check for uptime monitoring."""
     return {"status": "ok", "timestamp": datetime.datetime.now().isoformat()}
 
 
-@app.post("/scan", response_model=ScanResponse)
-def trigger_scan(request: ScanRequest):
+# ─────────────────────────────────────────────
+#  AUTH ROUTES
+# ─────────────────────────────────────────────
+@app.post("/auth/login", response_model=Token)
+def login(form_data: OAuth2PasswordRequestForm = Depends()):
     """
-    Triggers a vulnerability scan against a target.
-
-    Request body:
-      { "target": "192.168.1.1", "scan_type": "basic" }
-
-    Returns:
-      Full scan report with open ports, severity ratings, and summary.
+    Login endpoint. Returns a JWT token on success.
+    The React app stores this token and sends it with every request.
     """
-    # Validate scan type
+    user = authenticate_user(form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Incorrect username or password.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token = create_access_token({"sub": user["username"]})
+    print(f"[AUTH] Login successful → {user['username']} ({user['role']})")
+
+    return Token(
+        access_token = token,
+        token_type   = "bearer",
+        username     = user["username"],
+        full_name    = user["full_name"],
+        role         = user["role"],
+        expires_in   = TOKEN_EXPIRE * 60,
+    )
+
+
+@app.get("/auth/me", response_model=User)
+def get_me(current_user: User = Depends(get_current_user)):
+    """Returns the currently logged-in user's profile."""
+    return current_user
+
+
+# ─────────────────────────────────────────────
+#  PROTECTED SCAN ROUTES
+#  Depends(require_admin) → only admin can scan
+#  Depends(get_current_user) → any logged-in user
+# ─────────────────────────────────────────────
+@app.post("/scan")
+def trigger_scan(
+    request: ScanRequest,
+    current_user: User = Depends(require_admin),   # admin only
+):
+    """
+    Triggers a vulnerability scan. Admin role required.
+    The token must be sent in the Authorization header:
+    Authorization: Bearer <token>
+    """
     valid_types = ["basic", "version", "full"]
     if request.scan_type not in valid_types:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid scan_type. Choose from: {valid_types}"
-        )
+        raise HTTPException(status_code=400, detail=f"Invalid scan_type. Choose: {valid_types}")
 
-    # Resolve hostname to IP
     ip = resolve_target(request.target)
     if not ip:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Could not resolve target: {request.target}"
-        )
+        raise HTTPException(status_code=400, detail=f"Cannot resolve: {request.target}")
 
-    # Run the scan
-    print(f"\n[API] Scan triggered → target={request.target}, type={request.scan_type}")
+    print(f"\n[SCAN] {current_user.username} → target={request.target}, type={request.scan_type}")
+
     try:
         nm     = run_scan(ip, request.scan_type)
         report = analyze_results(nm, request.target)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Scan failed: {str(e)}")
 
-    # Save to history
+    # Tag who ran this scan
+    report["scan_metadata"]["scanned_by"] = current_user.username
     scan_history.append(report)
 
-    # Save latest report to file
     with open("scan_report.json", "w") as f:
         json.dump(report, f, indent=2)
 
-    print(f"[API] Scan complete → risk={report['summary']['overall_risk']}")
+    print(f"[SCAN] Complete → risk={report['summary']['overall_risk']}")
 
-    return ScanResponse(
-        success=True,
-        message=f"Scan complete. Overall risk: {report['summary']['overall_risk']}",
-        data=report,
-    )
+    return {
+        "success": True,
+        "message": f"Scan complete. Risk: {report['summary']['overall_risk']}",
+        "data":    report,
+    }
 
 
 @app.get("/scans/history")
-def get_history():
-    """
-    Returns all scans run in this session.
-    Later this will query your PostgreSQL database.
-    """
+def get_history(current_user: User = Depends(get_current_user)):
+    """All scans. Any logged-in user can view."""
     return {
         "total": len(scan_history),
         "scans": [
             {
-                "target":    s["scan_metadata"]["target"],
-                "timestamp": s["scan_metadata"]["timestamp"],
-                "risk":      s["summary"]["overall_risk"],
-                "open_ports":s["summary"]["open_ports"],
+                "target":     s["scan_metadata"]["target"],
+                "timestamp":  s["scan_metadata"]["timestamp"],
+                "risk":       s["summary"]["overall_risk"],
+                "open_ports": s["summary"]["open_ports"],
+                "scanned_by": s["scan_metadata"].get("scanned_by", "unknown"),
             }
             for s in scan_history
-        ]
+        ],
     }
 
 
 @app.get("/scans/latest")
-def get_latest():
-    """Returns the most recent scan report."""
+def get_latest(current_user: User = Depends(get_current_user)):
     if not scan_history:
-        raise HTTPException(status_code=404, detail="No scans run yet.")
+        raise HTTPException(status_code=404, detail="No scans yet.")
     return scan_history[-1]
 
 
 @app.get("/scans/stats")
-def get_stats():
-    """
-    Summary statistics across all scans in this session.
-    This feeds your dashboard charts.
-    """
+def get_stats(current_user: User = Depends(get_current_user)):
     if not scan_history:
         return {"message": "No scans yet.", "stats": {}}
 
-    risk_counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "CLEAN": 0}
+    risk_counts  = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "CLEAN": 0}
     total_ports  = 0
     targets      = []
 
@@ -175,25 +190,24 @@ def get_stats():
         targets.append(scan["scan_metadata"]["target"])
 
     return {
-        "total_scans":  len(scan_history),
+        "total_scans":       len(scan_history),
         "total_ports_found": total_ports,
-        "risk_breakdown": risk_counts,
-        "targets_scanned": targets,
+        "risk_breakdown":    risk_counts,
+        "targets_scanned":   targets,
     }
 
 
 # ─────────────────────────────────────────────
-#  RUN THE SERVER
+#  RUN
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
-
     print("""
   ╔══════════════════════════════════════╗
-  ║   SafeNet Ghana - API Server         ║
-  ║   Running on http://127.0.0.1:8000  ║
-  ║   Docs at   http://127.0.0.1:8000/docs
+  ║   SafeNet Ghana API v0.2.0           ║
+  ║   http://127.0.0.1:8000             ║
+  ║   Docs: http://127.0.0.1:8000/docs  ║
+  ║   JWT Authentication ENABLED        ║
   ╚══════════════════════════════════════╝
     """)
-
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
