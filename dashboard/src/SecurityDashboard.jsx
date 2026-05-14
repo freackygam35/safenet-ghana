@@ -36,12 +36,16 @@ const VULN_TEMPLATES = [
 ];
 
 const WIFI_ALERT_TEMPLATES = [
-  { type: "DEAUTH_FLOOD",   device: "AA:BB:CC:DD:EE:FF", ssid: "CorpNet-5G",      channel: 6,  detail: "Deauthentication flood detected — possible Evil Twin prep" },
-  { type: "ROGUE_AP",       device: "11:22:33:44:55:66", ssid: "CorpNet-5G_FREE", channel: 11, detail: "Rogue AP broadcasting on same SSID" },
-  { type: "PROBE_SWEEP",    device: "DE:AD:BE:EF:00:01", ssid: "—",               channel: 1,  detail: "Passive probe sweep across all channels" },
-  { type: "WPS_BRUTE",      device: "CA:FE:BA:BE:00:FF", ssid: "GuestWifi",       channel: 6,  detail: "WPS PIN brute-force in progress" },
-  { type: "PMKID_HARVEST",  device: "FA:CE:B0:0C:00:AA", ssid: "CorpNet-2G",      channel: 3,  detail: "PMKID harvest attack — offline crack attempt" },
-  { type: "ARP_SPOOF",      device: "BE:EF:CA:FE:11:22", ssid: "CorpNet-5G",      channel: 6,  detail: "ARP spoofing detected — MITM suspected" },
+  { type: "DEAUTH_FLOOD",   device: "AA:BB:CC:DD:EE:FF", ssid: "CorpNet-5G",      channel: 6,  detail: "Deauthentication flood — attacker forcing clients off network" },
+  { type: "EVIL_TWIN",      device: "11:22:33:44:55:66", ssid: "CorpNet-5G",      channel: 11, detail: "Evil Twin AP — fake network cloning legitimate SSID" },
+  { type: "ROGUE_AP",       device: "DE:AD:BE:EF:00:01", ssid: "FreeWifi_GH",     channel: 1,  detail: "Unauthorized AP detected — not in whitelist" },
+  { type: "MITM_ARP_SPOOF", device: "BE:EF:CA:FE:11:22", ssid: "CorpNet-5G",      channel: 6,  detail: "ARP spoofing — Man-in-the-Middle attack in progress" },
+  { type: "MAC_SPOOF",      device: "02:AB:CD:EF:00:11", ssid: "—",               channel: 6,  detail: "Locally administered MAC — possible MAC spoofing" },
+  { type: "WPS_BRUTE",      device: "CA:FE:BA:BE:00:FF", ssid: "GuestWifi",       channel: 6,  detail: "WPS PIN brute force — router PIN under attack" },
+  { type: "PMKID_HARVEST",  device: "FA:CE:B0:0C:00:AA", ssid: "CorpNet-2G",      channel: 3,  detail: "PMKID harvest — offline WPA2 password crack prep" },
+  { type: "EAVESDROPPING",  device: "C0:FF:EE:00:11:22", ssid: "OpenNet-GH",      channel: 11, detail: "Open unencrypted network — traffic visible to sniffers" },
+  { type: "PROBE_SWEEP",    device: "DE:AD:00:00:BE:EF", ssid: "—",               channel: 1,  detail: "Passive probe sweep — active WiFi reconnaissance" },
+  { type: "BEACON_FLOOD",   device: "FF:EE:DD:CC:BB:AA", ssid: "CorpNet-5G",      channel: 6,  detail: "Beacon flood attack — network disruption attempt" },
 ];
 
 const CCTV_FEEDS = [
@@ -75,8 +79,10 @@ const SEV = {
   LOW:      { bg: "#00bfff22", border: "#00bfff", text: "#67d9ff", dot: "#00bfff" },
 };
 const WIFI_SEV = {
-  DEAUTH_FLOOD: SEV.CRITICAL, ROGUE_AP: SEV.HIGH, PMKID_HARVEST: SEV.CRITICAL,
-  WPS_BRUTE: SEV.HIGH, PROBE_SWEEP: SEV.MEDIUM, ARP_SPOOF: SEV.CRITICAL,
+  DEAUTH_FLOOD: SEV.CRITICAL, EVIL_TWIN: SEV.CRITICAL, MITM_ARP_SPOOF: SEV.CRITICAL,
+  PMKID_HARVEST: SEV.CRITICAL, ROGUE_AP: SEV.HIGH, MAC_SPOOF: SEV.HIGH,
+  WPS_BRUTE: SEV.HIGH, EAVESDROPPING: SEV.HIGH, DISASSOC_FLOOD: SEV.HIGH,
+  PROBE_SWEEP: SEV.MEDIUM, BEACON_FLOOD: SEV.MEDIUM, ARP_SPOOF: SEV.CRITICAL,
 };
 const CCTV_SEV = {
   UNAUTHORIZED_ACCESS: SEV.CRITICAL, STREAM_TAMPERING: SEV.HIGH,
@@ -319,7 +325,7 @@ function Login({ onLogin }) {
         </div>
 
         <div style={{ marginTop: 18, textAlign: "center", fontFamily: "'Share Tech Mono', monospace", fontSize: 8, color: "#223", letterSpacing: 1 }}>
-          SAFENET GHANA v0.2.0 · FINAL YEAR PROJECT · GCTU
+          SAFENET GHANA v0.4.0 · FINAL YEAR PROJECT · GCTU
         </div>
       </div>
     </div>
@@ -837,8 +843,36 @@ function Dashboard({ authUser, onLogout }) {
         </div>
       </div>
 
+      {/* Module Status Bar */}
+      <div style={{
+        margin: "0 24px", padding: "10px 16px",
+        background: "rgba(10,18,30,0.85)", border: "1px solid rgba(0,255,136,0.15)",
+        borderRadius: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center"
+      }}>
+        <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 8, color: "#335", letterSpacing: 2, marginRight: 6 }}>// MODULES</span>
+        {[
+          { name: "Vuln Scanner",  status: "LIVE",     color: "#00ff88" },
+          { name: "JWT Auth",      status: "LIVE",     color: "#00ff88" },
+          { name: "PostgreSQL",    status: "LIVE",     color: "#00ff88" },
+          { name: "React Dashboard",status:"LIVE",     color: "#00ff88" },
+          { name: "WiFi IDS",      status: "LIVE",     color: "#00ff88" },
+          { name: "CCTV Monitor",  status: "BUILDING", color: "#ffd700" },
+          { name: "Flutter App",   status: "PLANNED",  color: "#555"    },
+        ].map(m => (
+          <span key={m.name} style={{
+            fontFamily: "'Share Tech Mono', monospace", fontSize: 8,
+            color: m.color, background: m.color + "12",
+            border: `1px solid ${m.color}30`, padding: "2px 8px", borderRadius: 2,
+            letterSpacing: 1
+          }}>
+            {m.status === "LIVE" ? "●" : m.status === "BUILDING" ? "◌" : "○"} {m.name}
+          </span>
+        ))}
+        <span style={{ marginLeft: "auto", fontFamily: "'Share Tech Mono', monospace", fontSize: 8, color: "#335" }}>v0.4.0</span>
+      </div>
+
       {/* Main Grid */}
-      <div style={{ padding: "20px 24px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div style={{ padding: "16px 24px 20px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <ThreatTimeline events={events.slice(0, 12)} />
         <VulnScanner authUser={authUser} />
         <WifiIDS />
