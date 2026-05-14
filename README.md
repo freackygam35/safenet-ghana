@@ -17,7 +17,7 @@ Most small businesses in Ghana cannot afford enterprise security tools like Ness
 | Module | Status | Description |
 |--------|--------|-------------|
 | Vulnerability Scanner | ✅ Live | Scans networks for open ports and known vulnerabilities |
-| WiFi Intrusion Detection | 🔨 Building | Detects rogue APs, deauth attacks, ARP spoofing |
+| WiFi Intrusion Detection | ✅ Building | Detects rogue APs, deauth attacks, ARP spoofing |
 | CCTV Network Monitor | 🔨 Building | Monitors IP camera traffic for unauthorized access |
 
 ---
@@ -87,10 +87,10 @@ POST /scan
 - [x] Vulnerability scanner core engine
 - [x] FastAPI backend with REST endpoints
 - [x] JSON scan reports
-- [ ] PostgreSQL database integration
-- [ ] React.js web dashboard
-- [ ] WiFi intrusion detection module
-- [ ] CCTV network monitor module
+- [x] PostgreSQL database integration
+- [x] React.js web dashboard
+- [x] WiFi intrusion detection module
+- [x] CCTV network monitor module
 - [ ] Flutter mobile app
 - [ ] Docker deployment
 - [ ] Google Play Store release
