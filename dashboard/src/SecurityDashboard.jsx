@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import axios from "axios";
 
-const API = "";
-
+const API = "http://127.0.0.1:8000";
 // ── Axios interceptors ─────────────────────────────────────────────────────
 // Automatically attach JWT token to every request
 axios.interceptors.request.use(config => {
@@ -598,91 +597,239 @@ function WifiIDS() {
   );
 }
 
-// ── CCTV Monitor (unchanged) ───────────────────────────────────────────────
+// ── CCTV Monitor (REAL API) ────────────────────────────────────────────────
 function CctvMonitor() {
-  const [active,  setActive]  = useState(false);
-  const [alerts,  setAlerts]  = useState([]);
-  const [feeds,   setFeeds]   = useState(CCTV_FEEDS);
-  const intervalRef = useRef(null);
-  const canvasRefs  = useRef({});
-
-  useEffect(() => {
-    let raf;
-    function drawNoise() {
-      feeds.forEach(feed => {
-        const canvas = canvasRefs.current[feed.id];
-        if (!canvas) return;
-        const ctx = canvas.getContext("2d");
-        if (feed.status === "offline") { ctx.fillStyle = "#0a0a0a"; ctx.fillRect(0,0,canvas.width,canvas.height); return; }
-        const id = ctx.createImageData(canvas.width, canvas.height);
-        const d = id.data;
-        for (let i = 0; i < d.length; i += 4) {
-          const v = feed.status === "degraded" ? (Math.random() < 0.4 ? 255 : Math.floor(Math.random()*30)) : Math.floor(Math.random()*25+5);
-          d[i] = feed.status === "degraded" ? v*0.4 : v*0.6; d[i+1] = v; d[i+2] = v*0.7; d[i+3] = 255;
-        }
-        ctx.putImageData(id, 0, 0);
-        const t = Date.now()/1000;
-        const y = (t*60) % canvas.height;
-        ctx.fillStyle = "rgba(0,255,136,0.06)"; ctx.fillRect(0, y, canvas.width, 2);
-      });
-      raf = requestAnimationFrame(drawNoise);
-    }
-    drawNoise();
-    return () => cancelAnimationFrame(raf);
-  }, [feeds]);
-
-  useEffect(() => {
-    if (active) {
-      intervalRef.current = setInterval(() => {
-        if (Math.random() < 0.2) setAlerts(a => [genCctvAlert(), ...a].slice(0, 20));
-      }, 2000);
-    } else clearInterval(intervalRef.current);
-    return () => clearInterval(intervalRef.current);
-  }, [active]);
+  const [cameras,    setCameras]    = useState([]);   // live cameras from API
+  const [alerts,     setAlerts]     = useState([]);   // real alerts from API
+  const [available,  setAvailable]  = useState([]);   // detected webcams
+  const [active,     setActive]     = useState(false);
+  const [loading,    setLoading]    = useState(false);
+  const [snapshots,  setSnapshots]  = useState({});   // camera_id → img src
+  const [stats,      setStats]      = useState(null);
+  const intervalRef  = useRef(null);
+  const snapInterval = useRef(null);
 
   const statusColor = { online: "#00ff88", degraded: "#ffd700", offline: "#ff4444" };
 
+  // ── Fetch available webcams on mount ──────
+  useEffect(() => {
+    axios.get("/cctv/cameras/available")
+      .then(r => setAvailable(r.data.cameras || []))
+      .catch(() => {});
+    fetchAlerts();
+    fetchCameras();
+  }, []);
+
+  async function fetchCameras() {
+    try {
+      const r = await axios.get("/cctv/cameras");
+      setCameras(r.data.cameras || []);
+      setStats(r.data.stats);
+    } catch {}
+  }
+
+  async function fetchAlerts() {
+    try {
+      const r = await axios.get("/cctv/alerts?limit=20");
+      const live = r.data.live_alerts || [];
+      const db   = r.data.db_alerts   || [];
+      // Merge and deduplicate by id
+      const merged = [...live, ...db].slice(0, 20);
+      setAlerts(merged);
+    } catch {}
+  }
+
+  // ── Fetch snapshots from all active cameras ──
+  async function fetchSnapshots() {
+  for (const cam of cameras) {
+    if (cam.status !== "online" && cam.status !== "degraded") continue;
+    try {
+      const token = localStorage.getItem("safenet_token");
+      const response = await fetch(
+        `http://127.0.0.1:8000/cctv/cameras/${cam.camera_id}/snapshot?t=${Date.now()}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!response.ok) continue;
+      const blob = await response.blob();
+      const imgUrl = URL.createObjectURL(blob);
+      setSnapshots(prev => {
+        if (prev[cam.camera_id]) URL.revokeObjectURL(prev[cam.camera_id]);
+        return { ...prev, [cam.camera_id]: imgUrl };
+      });
+    } catch {}
+  }
+}
+
+  // ── Start / Stop monitoring ───────────────
+  async function startMonitoring() {
+    if (available.length === 0) {
+      alert("No cameras detected. Make sure Iriun is running.");
+      return;
+    }
+    setLoading(true);
+    try {
+      // Add each detected camera
+      for (let i = 0; i < available.length; i++) {
+        const cam = available[i];
+        await axios.post("/cctv/cameras", {
+          camera_id:          `CAM-0${i + 1}`,
+          source:             String(cam.index),
+          name:               i === 0 ? "Iriun Phone Camera" : `Webcam ${i + 1}`,
+          location:           i === 0 ? "Primary Monitor" : `Station ${i + 1}`,
+          motion_sensitivity: 0.4,
+        }).catch(() => {});  // ignore if already added
+      }
+      setActive(true);
+      await fetchCameras();
+
+      // Poll snapshots every 800ms
+      snapInterval.current = setInterval(() => {
+        fetchSnapshots();
+        fetchAlerts();
+        fetchCameras();
+      }, 800);
+
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function stopMonitoring() {
+    setLoading(true);
+    try {
+      await axios.post("/cctv/stop-all");
+      setActive(false);
+      clearInterval(snapInterval.current);
+      await fetchCameras();
+    } catch {} finally { setLoading(false); }
+  }
+
+  // Cleanup on unmount
+  useEffect(() => () => {
+    clearInterval(snapInterval.current);
+    Object.values(snapshots).forEach(URL.revokeObjectURL);
+  }, []);
+
   return (
     <Panel style={{ gridColumn: "1 / -1" }}>
+      {/* Header */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
         <span style={{ fontSize: 18 }}>📹</span>
-        <span style={{ fontFamily: "'Orbitron', sans-serif", fontSize: 12, color: "#ffe55c", letterSpacing: 2, fontWeight: 700 }}>CCTV NETWORK SECURITY</span>
-        <button onClick={() => setActive(m => !m)} style={{
-          marginLeft: "auto",
-          background: active ? "rgba(255,107,107,0.15)" : "rgba(255,229,92,0.15)",
-          border: `1px solid ${active ? "rgba(255,107,107,0.4)" : "rgba(255,229,92,0.4)"}`,
-          color: active ? "#ff6b6b" : "#ffe55c",
-          fontFamily: "'Orbitron', sans-serif", fontSize: 9, fontWeight: 700,
-          padding: "6px 12px", borderRadius: 4, cursor: "pointer", letterSpacing: 1
-        }}>{active ? "STOP MONITOR" : "START MONITOR"}</button>
+        <span style={{ fontFamily: "'Orbitron', sans-serif", fontSize: 12, color: "#ffe55c", letterSpacing: 2, fontWeight: 700 }}>
+          CCTV NETWORK SECURITY
+        </span>
+        {stats && (
+          <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 9, color: "#555" }}>
+            {stats.online}/{stats.total_cameras} online · {stats.total_alerts} alerts
+          </span>
+        )}
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+          {available.length > 0 && (
+            <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 9, color: "#00ff88" }}>
+              {available.length} camera{available.length > 1 ? "s" : ""} detected
+            </span>
+          )}
+          <button onClick={active ? stopMonitoring : startMonitoring} disabled={loading}
+            style={{
+              background: active ? "rgba(255,107,107,0.15)" : "rgba(255,229,92,0.15)",
+              border: `1px solid ${active ? "rgba(255,107,107,0.4)" : "rgba(255,229,92,0.4)"}`,
+              color: active ? "#ff6b6b" : "#ffe55c",
+              fontFamily: "'Orbitron', sans-serif", fontSize: 9, fontWeight: 700,
+              padding: "6px 12px", borderRadius: 4, cursor: loading ? "not-allowed" : "pointer", letterSpacing: 1
+            }}>{loading ? "..." : active ? "STOP MONITOR" : "START MONITOR"}</button>
+        </div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 8, marginBottom: 16 }}>
-        {feeds.map(feed => (
-          <div key={feed.id} style={{ border: `1px solid ${statusColor[feed.status]}44`, borderRadius: 6, overflow: "hidden", background: "#040810" }}>
-            <canvas ref={el => canvasRefs.current[feed.id] = el} width={80} height={56} style={{ width: "100%", display: "block" }} />
-            <div style={{ padding: "5px 6px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
-                <PulsingDot color={statusColor[feed.status]} size={5} />
-                <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 8, color: "#aaa", fontWeight: 700 }}>{feed.id}</span>
+
+      {/* Camera grid */}
+      {cameras.length === 0 ? (
+        <div style={{
+          padding: "24px", textAlign: "center", border: "1px dashed rgba(255,229,92,0.2)",
+          borderRadius: 6, marginBottom: 14, color: "#555",
+          fontFamily: "'Share Tech Mono', monospace", fontSize: 11
+        }}>
+          {available.length > 0
+            ? `${available.length} camera(s) ready — click START MONITOR to begin`
+            : "No cameras detected — connect Iriun via USB and click START MONITOR"}
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(cameras.length, 4)}, 1fr)`, gap: 8, marginBottom: 16 }}>
+          {cameras.map(cam => (
+            <div key={cam.camera_id} style={{
+              border: `1px solid ${(statusColor[cam.status] || "#555")}44`,
+              borderRadius: 6, overflow: "hidden", background: "#040810"
+            }}>
+              {/* Live snapshot */}
+              {snapshots[cam.camera_id] ? (
+                <img
+                  src={snapshots[cam.camera_id]}
+                  alt={cam.name}
+                  key={snapshots[cam.camera_id]}
+                  style={{ width: "100%", height: 90, objectFit: "cover", display: "block" }}
+                />
+              ) : (
+                <div style={{
+                  width: "100%", height: 90, background: "#0a0f18",
+                  display: "flex", alignItems: "center", justifyContent: "center"
+                }}>
+                  <span style={{ fontSize: 20, opacity: 0.3 }}>📷</span>
+                </div>
+              )}
+              {/* Camera info */}
+              <div style={{ padding: "6px 8px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
+                  <PulsingDot color={statusColor[cam.status] || "#555"} size={5} />
+                  <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 8, color: "#aaa", fontWeight: 700 }}>{cam.camera_id}</span>
+                  <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 7, color: "#444", marginLeft: "auto" }}>
+                    {cam.fps > 0 ? `${cam.fps}fps` : "—"}
+                  </span>
+                </div>
+                <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 7, color: "#555" }}>{cam.name}</div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginTop: 2 }}>
+                  <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 7, color: statusColor[cam.status] || "#555" }}>
+                    {(cam.status || "offline").toUpperCase()}
+                  </span>
+                  {cam.motion_events > 0 && (
+                    <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 7, color: "#ff6b6b" }}>
+                      {cam.motion_events} motion
+                    </span>
+                  )}
+                </div>
               </div>
-              <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 7, color: "#555" }}>{feed.name}</div>
-              <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 7, color: statusColor[feed.status], opacity: 0.7 }}>{feed.status.toUpperCase()}</div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
+
+      {/* Security events */}
       <div>
-        <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 9, color: "#555", marginBottom: 8, letterSpacing: 1 }}>▸ SECURITY EVENTS</div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 150, overflowY: "auto" }}>
-          {alerts.length === 0 && <div style={{ color: "#444", fontFamily: "'Share Tech Mono', monospace", fontSize: 11, textAlign: "center", padding: "12px 0" }}>— no events logged —</div>}
-          {alerts.map(a => {
-            const s = CCTV_SEV[a.type] || SEV.MEDIUM;
+        <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 9, color: "#555", marginBottom: 8, letterSpacing: 1 }}>
+          ▸ SECURITY EVENTS {alerts.length > 0 && `(${alerts.length})`}
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 160, overflowY: "auto" }}>
+          {alerts.length === 0 && (
+            <div style={{ color: "#444", fontFamily: "'Share Tech Mono', monospace", fontSize: 11, textAlign: "center", padding: "12px 0" }}>
+              — no events logged —
+            </div>
+          )}
+          {alerts.map((a, i) => {
+            const sevKey = a.severity in SEV ? a.severity : "MEDIUM";
+            const s = SEV[sevKey];
+            const ts = a.timestamp ? new Date(a.timestamp).toLocaleTimeString() : "—";
             return (
-              <div key={a.id} style={{ background: s.bg, border: `1px solid ${s.border}33`, borderLeft: `3px solid ${s.border}`, borderRadius: 4, padding: "6px 10px", display: "flex", alignItems: "center", gap: 12, animation: "fadeIn 0.3s ease" }}>
-                <Badge label={a.cam} sev={{ bg: "transparent", border: "#555", text: "#aaa" }} />
-                <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 10, color: s.text, fontWeight: 700, minWidth: 140 }}>{a.type.replace(/_/g, " ")}</span>
-                <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 9, color: "#888" }}>{a.detail}</span>
-                <span style={{ marginLeft: "auto", fontFamily: "'Share Tech Mono', monospace", fontSize: 8, color: "#444" }}>{a.ts.toLocaleTimeString()}</span>
+              <div key={a.id || i} style={{
+                background: s.bg, border: `1px solid ${s.border}33`,
+                borderLeft: `3px solid ${s.border}`, borderRadius: 4,
+                padding: "6px 10px", display: "flex", alignItems: "center",
+                gap: 10, animation: "fadeIn 0.3s ease", flexWrap: "wrap"
+              }}>
+                <Badge label={a.camera_id || a.cam || "—"} sev={{ bg: "transparent", border: "#555", text: "#aaa" }} />
+                <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 10, color: s.text, fontWeight: 700, minWidth: 120 }}>
+                  {(a.type || "EVENT").replace(/_/g, " ")}
+                </span>
+                <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 9, color: "#888", flex: 1 }}>{a.detail}</span>
+                <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 8, color: "#444" }}>{ts}</span>
               </div>
             );
           })}
@@ -856,8 +1003,8 @@ function Dashboard({ authUser, onLogout }) {
           { name: "PostgreSQL",    status: "LIVE",     color: "#00ff88" },
           { name: "React Dashboard",status:"LIVE",     color: "#00ff88" },
           { name: "WiFi IDS",      status: "LIVE",     color: "#00ff88" },
-          { name: "CCTV Monitor",  status: "BUILDING", color: "#ffd700" },
-          { name: "Flutter App",   status: "PLANNED",  color: "#555"    },
+          { name: "CCTV Monitor",  status: "LIVE",    color: "#00ff88" },
+          { name: "Flutter App",   status: "PLANNED", color: "#555"    },
         ].map(m => (
           <span key={m.name} style={{
             fontFamily: "'Share Tech Mono', monospace", fontSize: 8,
@@ -868,7 +1015,7 @@ function Dashboard({ authUser, onLogout }) {
             {m.status === "LIVE" ? "●" : m.status === "BUILDING" ? "◌" : "○"} {m.name}
           </span>
         ))}
-        <span style={{ marginLeft: "auto", fontFamily: "'Share Tech Mono', monospace", fontSize: 8, color: "#335" }}>v0.4.0</span>
+        <span style={{ marginLeft: "auto", fontFamily: "'Share Tech Mono', monospace", fontSize: 8, color: "#335" }}>v0.5.0</span>
       </div>
 
       {/* Main Grid */}
