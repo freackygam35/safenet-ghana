@@ -656,7 +656,9 @@ function CctvMonitor() {
         if (prev[cam.camera_id]) URL.revokeObjectURL(prev[cam.camera_id]);
         return { ...prev, [cam.camera_id]: imgUrl };
       });
-    } catch {}
+    } catch (err) {
+      console.error("Snapshot error:", err);
+    }
   }
 }
 
